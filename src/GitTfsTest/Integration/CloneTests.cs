@@ -1,8 +1,8 @@
-﻿using System;
-using System.Linq;
-using LibGit2Sharp;
-using GitTfs.Core.TfsInterop;
+﻿using GitTfs.Core.TfsInterop;
 using GitTfs.Test.Fixtures;
+using LibGit2Sharp;
+using System;
+using System.Linq;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -206,6 +206,31 @@ namespace GitTfs.Test.Integration
         }
 
         [FactExceptOnUnix]
+        public void WhenCloningTrunkWithMergeChangeset_ThenNonUniqueChangesetsIdentifiedAsMergeParentCorrectly()
+        {
+            CreateFakeRepositoryWithMergeChangesetThatEndsWithNonUnique();
+
+            h.Run("clone", h.TfsUrl, "$/MyProject/Main", "MyProject");
+
+            // verify that last commit of branch is (C8) "expected merge parent"
+            var branchCollection = h.Repository("MyProject").Branches.Cast<Branch>().ToList();
+            var branch = branchCollection.FirstOrDefault(b => b.FriendlyName == "tfs/Branch");
+            Assert.NotNull(branch);
+
+            var expectedBranchChangesetParentCommit = branch.Commits.First();
+            Assert.True(expectedBranchChangesetParentCommit.Message.IndexOf("expected merge parent", StringComparison.InvariantCultureIgnoreCase) >= 0);
+
+            // verify that merge parent (C9) "merge in main" is C8 ("expected merge parent")
+            var master = branchCollection.FirstOrDefault(b => b.FriendlyName == "master");
+            Assert.NotNull(master);
+
+            var mergeCommit = master.Commits.First();
+            Assert.True(mergeCommit.Message.IndexOf("merge in main", StringComparison.InvariantCultureIgnoreCase) >= 0);
+
+            Assert.Contains(expectedBranchChangesetParentCommit, mergeCommit.Parents);
+        }
+
+        [FactExceptOnUnix]
         public void WhenCloningFunctionalTestVtccdsWithBranchesRenaming_ThenAllRenamesShouldBeWellHandled()
         {
             h.SetupFake(r =>
@@ -317,11 +342,11 @@ namespace GitTfs.Test.Integration
                  .Change(TfsChangeType.Add, TfsItemType.File, "$/MyProject/README", "tld \r\n another line \r\n");
             });
             h.Run("clone", h.TfsUrl, "$/MyProject", "MyProject","--autocrlf=true");
-            
+
             h.AssertFileInWorkspace("MyProject", "README", "tld \r\n another line \r\n");
             h.AssertFileInIndex("MyProject", "README", "tld \n another line \n");
         }
-        
+
         [FactExceptOnUnix]
         public void LineNotNormalizedWhenAutocrlfFalse()
         {
@@ -422,6 +447,43 @@ namespace GitTfs.Test.Integration
                 "refs/heads/Branch"
             };
             AssertNewClone("MyTeamProject", refs);
+        }
+
+        private void CreateFakeRepositoryWithMergeChangesetThatEndsWithNonUnique()
+        {
+            // Special case: if a branch ends with a changeset that only has files that were included earlier in that
+            // branch...
+
+            //History of changesets:
+            //6
+            //|\
+            //| 5  <-- contains only files from 3 & 4
+            //| |
+            //| 4
+            //| |
+            //| 3
+            //| /
+            //2
+            //|
+            //1
+            h.SetupFake(r =>
+            {
+                r.SetRootBranch("$/MyProject/Main");
+                r.Changeset(1, "Project created from template", DateTime.Parse("2012-01-01 12:12:12 -05:00"))
+                    .Change(TfsChangeType.Add, TfsItemType.Folder, "$/MyProject");
+                r.Changeset(2, "First commit", DateTime.Parse("2012-01-02 12:12:12 -05:00"))
+                    .Change(TfsChangeType.Add, TfsItemType.Folder, "$/MyProject/Main")
+                    .Change(TfsChangeType.Add, TfsItemType.File, "$/MyProject/Main/File.txt", "File contents");
+                r.BranchChangeset(3, "create branch", DateTime.Parse("2012-01-02 12:12:14 -05:00"), fromBranch: "$/MyProject/Main", toBranch: "$/MyProject/Branch", rootChangesetId: 2)
+                    .Change(TfsChangeType.Branch, TfsItemType.Folder, "$/MyProject/Branch")
+                    .Change(TfsChangeType.Branch, TfsItemType.File, "$/MyProject/Branch/File.txt", "File contents");
+                r.Changeset(4, "commit in branch", DateTime.Parse("2012-01-02 12:12:15 -05:00"))
+                    .Change(TfsChangeType.Edit, TfsItemType.File, "$/MyProject/Branch/File.txt", "File contents_branch");
+                r.Changeset(5, "expected merge parent", DateTime.Parse("2012-01-02 12:12:16 -05:00"))
+                    .Change(TfsChangeType.Edit, TfsItemType.File, "$/MyProject/Branch/File.txt", "Edited File contents_branch");
+                r.MergeChangeset(6, "merge in main", DateTime.Parse("2012-01-02 12:12:16 -05:00"), fromBranch: "$/MyProject/Branch", intoBranch: "$/MyProject/Main", lastChangesetId: 5)
+                    .Change(TfsChangeType.Edit | TfsChangeType.Merge, TfsItemType.File, "$/MyProject/Main/File.txt", "File contents_main_branch=>_merge");
+            });
         }
     }
 }
